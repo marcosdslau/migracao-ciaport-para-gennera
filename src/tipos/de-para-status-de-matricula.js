@@ -1,0 +1,21 @@
+module.exports = {
+    "AB": "Cancelado",
+    "AE": "Ativo",
+    "AM": "Ativo",
+    "CA": "Cancelado",
+    "DL": "Cancelado",
+    "DS": "Cancelado",
+    "FA": "Cancelado",
+    "FO": "Cancelado",
+    "MC": "Cancelado",
+    "MT": "Ativo",
+    "NN": "Ativo",
+    "PD": "Ativo",
+    "RE": "Ativo",
+    "RI": "Ativo",
+    "RM": "Ativo",
+    "RP": "Ativo",
+    "TF": "Cancelado",
+    "TR": "Cancelado",
+    "VI": "Ativo"
+}

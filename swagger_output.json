@@ -1,0 +1,160 @@
+{
+  "swagger": "2.0",
+  "info": {
+    "version": "1.0.0",
+    "title": "Integrador Dominio Contabil",
+    "description": "Documentação para front-end consumir API do integrador."
+  },
+  "host": "localhost:8000",
+  "basePath": "/",
+  "schemes": [
+    "https"
+  ],
+  "securityDefinitions": {
+    "JWT": {
+      "type": "apiKey",
+      "name": "x-access-token",
+      "in": "header"
+    }
+  },
+  "consumes": [
+    "application/json"
+  ],
+  "produces": [
+    "application/json"
+  ],
+  "paths": {
+    "/currents/notifications": {
+      "get": {
+        "tags": [
+          "Notifications"
+        ],
+        "description": "Busca todas as Notifications Vigentes.",
+        "parameters": [
+          {
+            "name": "x-access-token",
+            "in": "header",
+            "type": "string"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/notifications": {
+      "get": {
+        "tags": [
+          "Notifications"
+        ],
+        "description": "Busca todas as Notifications.",
+        "parameters": [
+          {
+            "name": "x-access-token",
+            "in": "header",
+            "type": "string"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Notifications"
+        ],
+        "description": "Registra uma nova Notification.",
+        "parameters": [
+          {
+            "name": "x-access-token",
+            "in": "header",
+            "type": "string"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/notifications/{idNotification}": {
+      "get": {
+        "tags": [
+          "Notifications"
+        ],
+        "description": "Busca pelo id a Notification.",
+        "parameters": [
+          {
+            "name": "idNotification",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "x-access-token",
+            "in": "header",
+            "type": "string"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Notifications"
+        ],
+        "description": "Atualiza uma Notification.",
+        "parameters": [
+          {
+            "name": "idNotification",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "x-access-token",
+            "in": "header",
+            "type": "string"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Notifications"
+        ],
+        "description": "Exclui uma Notification.",
+        "parameters": [
+          {
+            "name": "idNotification",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "x-access-token",
+            "in": "header",
+            "type": "string"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    }
+  }
+}
