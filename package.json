@@ -6,6 +6,10 @@
   "scripts": {
     "swagger-autogen": "node swagger.js",
     "db": "node initDatabase.js && npx sequelize-cli db:migrate && npx sequelize-cli db:seed:all",
+    "migrate": "npx sequelize-cli db:migrate",
+    "pessoas": "node migrar-pessoas.js",
+    "csv": "node gerar-csv.js",
+    "conferir": "node conferir-pessoas.js",
     "dev": "node index.js",
     "serve": "node index.js"
   },

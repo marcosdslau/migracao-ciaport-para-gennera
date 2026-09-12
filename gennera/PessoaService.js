@@ -1,1077 +1,521 @@
 require('dotenv').config();
-const LayoutService = require('../src/services/LayoutService');
 const PersonService = require('../src/services/PersonService');
 const FiliationService = require('../src/services/FiliationService');
-const connectionSQLServer = require('../database/database-migracao');
-const pessoasImportadas = require('../src/tipos/idPerson-pessoas-importadas');
-const {log} = require('../src/services/LogService');
+const origem = require('../database/database-migracao');
+const { log } = require('../src/services/LogService');
+const N = require('./normalize');
 
-function validateEmail(email) {
-    var re = /\S+@\S+\.\S+/;
-    return re.test(email);
+const CAMPOS_PESSOA = [
+    'id_person', 'id_student', 'profile', 'type',
+    'name', 'social_name', 'legal_name', 'email',
+    'zipcode', 'street', 'street_number', 'city',
+    'state', 'country', 'complement', 'neighborhood',
+    'zone', 'birthdate', 'birthplace', 'birth_state',
+    'birth_country', 'nationality', 'gender', 'ethnicity',
+    'rg', 'rg_issuing_agency', 'rg_issuing_state', 'rg_issue_date',
+    'social_id', 'cpf', 'cnpj', 'civil_status',
+    'profession', 'religion', 'telephone_area_code', 'telephone_number',
+    'mobile_phone_area_code', 'mobile_phone_number', 'commercial_phone_area_code', 'commercial_phone_number',
+    'fax_area_code', 'fax_number', 'foreigner_document_issue_date', 'foreigner_document',
+    'foreigner_document_expiry_date', 'military_status', 'military_description', 'military_certificate',
+    'military_certificate_description', 'voter_document', 'voter_document_issue_date', 'voter_document_city',
+    'voter_document_state', 'voter_document_section', 'voter_document_zone', 'civil_certificate_term',
+    'civil_certificate_page', 'civil_certificate_book', 'civil_certificate_issue_date', 'civil_certificate_agency_state',
+    'civil_certificate_agency', 'civil_certificate_father', 'civil_certificate_mother', 'marriage_certificate_term',
+    'marriage_certificate_page', 'marriage_certificate_book', 'marriage_certificate_issue_date', 'marriage_certificate_agency_state',
+    'marriage_certificate_agency', 'identity', 'commercial_name', 'passport',
+    'academic_title', 'student_code_inep', 'academic_registration', 'conclusion_date',
+    'conclusion_educational_institution', 'conclusion_educational_city', 'conclusion_educational_uf', 'elementary_school_conclusion_date',
+    'elementary_school_conclusion_educational_institution', 'elementary_school_conclusion_educational_city', 'elementary_school_conclusion_educational_uf', 'higher_education_conclusion_date',
+    'higher_education_conclusion_institution', 'higher_education_conclusion_educational_city', 'higher_education_conclusion_educational_uf', 'higher_education_conclusion_course',
+    'higher_education_type_of_school', 'primary_school_conclusion_date', 'primary_school_conclusion_institution', 'primary_school_conclusion_educational_city',
+    'primary_school_conclusion_educational_uf', 'photo_person', 'functions', 'codigo_professor_INEP',
+    'type_of_school', 'elementary_school_type_of_school', 'hiring_regime', 'curriculum_URL'
+];
+
+function paraArgumentos(dados) {
+    return CAMPOS_PESSOA.map(campo => {
+        const valor = dados[campo];
+        if (valor === undefined || valor === null) return campo === 'functions' ? null : '';
+        return valor;
+    });
 }
 
-function validarCPF(cpf) {	
-	if(cpf){
-        cpf = cpf.replace(/[^\d]+/g,'');	
-        if(cpf == '') return false;	
-        // Elimina CPFs invalidos conhecidos	
-        if (cpf.length != 11 || 
-            cpf == "00000000000" || 
-            cpf == "11111111111" || 
-            cpf == "22222222222" || 
-            cpf == "33333333333" || 
-            cpf == "44444444444" || 
-            cpf == "55555555555" || 
-            cpf == "66666666666" || 
-            cpf == "77777777777" || 
-            cpf == "88888888888" || 
-            cpf == "99999999999")
-                return false;		
-        // Valida 1o digito	
-        add = 0;	
-        for (i=0; i < 9; i ++)		
-            add += parseInt(cpf.charAt(i)) * (10 - i);	
-            rev = 11 - (add % 11);	
-            if (rev == 10 || rev == 11)		
-                rev = 0;	
-            if (rev != parseInt(cpf.charAt(9)))		
-                return false;		
-        // Valida 2o digito	
-        add = 0;	
-        for (i = 0; i < 10; i ++)		
-            add += parseInt(cpf.charAt(i)) * (11 - i);	
-        rev = 11 - (add % 11);	
-        if (rev == 10 || rev == 11)	
-            rev = 0;	
-        if (rev != parseInt(cpf.charAt(10)))
-            return false;		
-        return true;   
-    } else{
-        return false;
-    }
-}
-
-function limparComplemento(complemento) {
-    if(!complemento) return '';
-    const texto = `${complemento}`.trim();
-    // Gennera aceita no máximo 11 caracteres em "complement"
-    return texto.length > 11 ? '' : texto;
-}
-
-function normalizaParentesco(descricao) {
-    if (!descricao) return 'responsável';
-    // Sponte traz "Pai", "Mãe", "Responsável", "Pai - Falecido" e "Mãe - Falecida";
-    // a Gennera so aceita pai, mãe, irmão, irmã, avô, avó, adotador, responsável, outros
-    const tipo = `${descricao}`.toLowerCase().split('-')[0].trim();
-    if (tipo === 'pai') return 'pai';
-    if (tipo === 'mãe' || tipo === 'mae') return 'mãe';
-    return 'responsável';
-}
-
-function limparNumeroEndereco(numero) {
-    if(!numero) return '';
-    const texto = `${numero}`.trim();
-    // Gennera aceita no máximo 5 caracteres em "street_number"
-    return texto.length > 5 ? '' : texto;
-}
-
-class PessoaService{
-
-    async ProcessarPessoas(){
-        const pessoaServico = new PersonService();
-        if (process.env.PESSOAS == 1) {
-            console.log('INICIO PROCESSANDO PESSOAS')
-            log('INICIO PROCESSANDO PESSOAS')
-            //////////////////////////////// INICIO ALUNOS ////////////////////////////////
-
-            const pessoasModel = await connectionSQLServer.query(`
-
-                SELECT
-	"Alunos"."AlunoID"
-	, "Alunos"."ResponsavelFinanceiroID"
-	, "Alunos"."EstadoCivilID"
-	, "EstadosCivis"."Descricao" as "EstadoCivil"
-	, "Alunos"."Nome"
-	, COALESCE(CAST("Alunos"."DataNascimento" AS text), '') AS "DataNascimento"
-	, (CASE 
-		WHEN "Alunos"."Sexo" = 'F' THEN 'Feminino'
-		WHEN "Alunos"."Sexo" = 'M' THEN 'Masculino'
-		ELSE '' END
-	)AS "Sexo"
-	, COALESCE(CAST("Alunos"."CPF" AS text), '') AS "CPF"
-	, COALESCE(CAST("Alunos"."RG" AS text), '') AS "RG"
-	, COALESCE(CAST("Alunos"."Endereco" AS text), '') AS "Endereco"
-	, COALESCE(CAST("Alunos"."CEP" AS text), '') AS "CEP"
-	, COALESCE(CAST("Alunos"."ComplementoEndereco" AS text), '') AS "ComplementoEndereco"
-	, COALESCE(CAST("Cidades"."Nome" AS text), '') AS "Cidade"
-	, COALESCE(CAST("Cidades"."Estado" AS text), '') AS "Estado"
-	, COALESCE(CAST("Bairros"."Nome" AS text), '') AS "Bairro"
-	, COALESCE(CAST("Alunos"."FoneResidencial" AS text), '') "FoneResidencial"
-	, COALESCE(CAST("Alunos"."FoneCelular" AS text), '') AS"FoneCelular"
-	, COALESCE(CAST("Alunos"."Profissao" AS text), '') AS "Profissao"
-	, COALESCE(CAST("EmailsPessoas"."Email" AS text) ,'') AS "Email"
-	, COALESCE(CAST("Alunos"."FoneComercial" AS text), '') AS "FoneComercial"
-	, CAST("Alunos"."TituloEleitor" AS text) AS "TituloEleitor"
-	, CAST("Alunos"."DocumentoMilitar" AS text) AS "DocumentoMilitar"
-	, "Alunos"."CertidaoNascimento"
-	,CAST("Alunos"."CertidaoFolha" AS text) AS "CertidaoFolha"
-	, CAST("Alunos"."CertidaoLivro" AS text) AS "CertidaoLivro"
-	, CAST("Alunos"."CertidaoTermo" AS text) AS "CertidaoTermo"
-	, "Alunos"."CertidaoDataEmissao"
-	, "Alunos"."CertidaoCartorio"
-	, "Alunos"."CertidaoUF"
-	, "Alunos"."DataExpedicaoRG"
-	, COALESCE(CAST("Alunos"."OrgaoExpedidorRG" AS text), '') AS"OrgaoExpedidorRG"
-	, (CASE 
-		WHEN "Alunos"."Cor" = 1 THEN 'Branca'
-		WHEN "Alunos"."Cor" = 2 THEN 'Preta'
-		WHEN "Alunos"."Cor" = 0 THEN 'Não Declarada'
-		WHEN "Alunos"."Cor" = 3 THEN 'Parda'
-		WHEN "Alunos"."Cor" = 4 THEN 'Amarela'
-		WHEN "Alunos"."Cor" = 5 THEN 'Indígena'
-		ELSE 'Não Declarada' END
-	  ) as "Etinia"
-	, "Alunos"."TipoCertidao"
-	, "Alunos"."NumeroMatriculaCertidao"
-	, COALESCE(CAST("Alunos"."TituloEleitorZona" AS text),'') AS "TituloEleitorZona"
-	, CAST("Alunos"."TituloEleitorSessao" AS text) AS "TituloEleitorSessao"
-	, CAST("Alunos"."TituloEleitorDataEmissao" AS text) AS "TituloEleitorDataEmissao"
-	, CAST("Alunos"."NroDocMilitar" AS text) AS "NroDocMilitar"
-	, CAST("Alunos"."NroPassaporte" AS text) AS "NroPassaporte"
-	, COALESCE(CAST("Alunos"."NumeroEndereco" AS text),'') AS "NumeroEndereco"
-	, CAST("Alunos"."NomeSocial" AS text) AS "NomeSocial"
-	,'Brasileira' AS "Nacionalidade"
-	,'Brasil' AS "Pais"
-	
-FROM "Alunos" 
-	LEFT JOIN "EstadosCivis" ON "EstadosCivis"."EstadoCivilID" = "Alunos"."EstadoCivilID"
-	LEFT JOIN "Cidades" ON "Cidades"."CidadeID" = "Alunos"."CidadeID"
-	LEFT JOIN "Bairros" ON "Bairros"."BairroID" = "Alunos"."BairroID"
-	LEFT JOIN "EmailsPessoas" ON "EmailsPessoas"."AlunoID" = "Alunos"."AlunoID"
-/* FILTRO DO CLIENTE ANTERIOR (FAAR) - DESATIVADO PARA sponte_fato_cpa
-where "Alunos"."AlunoID" in (
-'122', '143', '153', '168', '192', '237', '268', '366', '383', '410', '413', '498', '535', '623', '632', '712', '721', '728', '752', '768', '851', '860', '867', '872', '902', '904', '967', '1133', '1231', '1264', '1269', '1280', '1290', '1293', '1294', '1301', '1323', '1327', '1359', '1428', '1429', '1430', '1431', '1432', '1434', '1435', '1436', '1437', '1438', '1439', '1440', '1442', '1444', '1445', '1454', '1455', '1471', '1517', '1575', '1582', '1587', '1593', '1602', '1606', '1611', '1614', '1620', '1636', '1645', '1647', '1665', '1667', '1668', '1669', '1671', '1672', '1675', '1677', '1680', '1683', '1684', '1687', '1688', '1689', '1690', '1691', '1693', '1696', '1697', '1699', '1700', '1704', '1705', '1706', '1707', '1710', '1713', '1714', '1716', '1718', '1720', '1721', '1722', '1723', '1724', '1725', '1726', '1727', '1728', '1729', '1730', '1731', '1732', '1733', '1734', '1735', '1736', '1738', '1739'
-)
-
-LIMIT 50
-*/
-
-
-            `);
-            const pessoas = pessoasModel[0];
-            let count = 1;
-            if(process.env.PESSOASALUNOS == 1){
-                for (let pessoa of pessoas) {
-                    console.log(`Processando ${count} de ${pessoas.length} ALUNOS`);
-                    log(`Processando ${count} de ${pessoas.length} ALUNOS`);
-                    const { AlunoID, EstadoCivil, Nome, DataNascimento, Sexo, CPF, RG, DataExpedicaoRG, OrgaoExpedidorRG,  Endereco, NumeroEndereco, Cidade, Estado, Bairro, CEP, ComplementoEndereco, FoneResidencial,
-                        FoneCelular, Profissao, Email, FoneComercial, TituloEleitor, DocumentoMilitar, CertidaoNascimento, CertidaoFolha,
-                        CertidaoLivro, CertidaoTermo, CertidaoDataEmissao, CertidaoCartorio, CertidaoUF, NumeroMatriculaCertidao,  Etinia, 
-                        TituloEleitorZona, TituloEleitorSessao, TituloEleitorDataEmissao, NroDocMilitar, NroPassaporte, NomeSocial, Nacionalidade, Pais  } = pessoa;
-                    let idPerson = parseInt(AlunoID);
-                    let idStudent = idPerson;
-
-                    let profile = 2;
-                    let dtNascimento = DataNascimento ? DataNascimento.split(' ')[0] : '';
-                    let dtTituloEleitor = TituloEleitorDataEmissao ? TituloEleitorDataEmissao.split(' ')[0] : '';
-
-                    if (dtNascimento) {
-                        let [mes, dia, ano] = dtNascimento.split('/');
-                        dia = parseInt(dia);
-                        mes = parseInt(mes);
-                        if(mes == 9) {
-                            console.log('achei')
-                        }
-                        dtNascimento = `${dia < 10 ? '0'+dia : dia}/${mes < 10 ? '0'+mes : mes}/${ano}`;
-                    }
-                    if (dtTituloEleitor) {
-                        let [mes, dia, ano] = dtTituloEleitor.split('/');
-                        dia = parseInt(dia);
-                        mes = parseInt(mes);
-                        dtTituloEleitor = `${dia < 10 ? '0'+dia : dia}/${mes < 10 ? '0'+mes : mes}/${ano}`;
-                    }
-
-                    let rg_issue_date = DataExpedicaoRG ? DataExpedicaoRG.split(' ')[0] : '';
-                    if (rg_issue_date){
-                        let [mes, dia, ano] = rg_issue_date.split('/');
-                        dia = parseInt(dia);
-                        mes = parseInt(mes);
-                        rg_issue_date = `${dia < 10 ? '0'+dia : dia}/${mes < 10 ? '0'+mes : mes}/${ano}`;
-                    }
-
-                    let sexo = Sexo || '';
-                    let etinia = Etinia || '';
-                    let estadoCivil = EstadoCivil || '';
-
-                    let nacionalidade = Nacionalidade || '';
-                    let birth_country = Pais || '';
-
-                    let email = Email|| "";
-                    if(email){
-                        let emailAux = email.normalize('NFD').replace(/[\u0300-\u036f]/g, "");
-                        if(validateEmail(emailAux)){
-                            //emailAux = emailAux.split(/(?<=[a-z0-9])(?=[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,})/i)[0];
-                            emailAux = emailAux.replaceAll(/[^a-zA-Z0-9@._]/g, '');
-                            emailAux = emailAux.replace(/\.$/, '');
-                            emailAux = emailAux.replace(/\.c$/, '.com');
-                            emailAux = emailAux.replace(/([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-z]{2,})(.*)/, '$1');
-                            emailAux = emailAux.replaceAll('.@.', '@');
-                            emailAux = emailAux.replaceAll('.@', '@');
-                            emailAux = emailAux.replaceAll('@.', '@');
-                            emailAux = emailAux.replaceAll(' ', '');
-                            email = emailAux;
-                        }
-                    }
-                    let ensinoMedioRegime = '';
-
-                    let cep_clean = CEP;
-                    if(cep_clean){
-                        cep_clean = cep_clean.replaceAll('.', '');
-                        cep_clean = cep_clean.replaceAll('-', '');
-                        cep_clean = cep_clean.replaceAll(' ', '');
-                    }
-
-                    if(Nome) {
-                        let nome = Nome;
-                        let auxname = `${nome}`;
-                        let arr = auxname.split(' ');
-                        if(arr.length == 1) nome += ' ajustar sponte';
-
-                        let foundedEmail = await pessoaServico.BuscarPessoaPeloEmail(email);
-                        if(foundedEmail != null) email = '';
-
-                        let rg_clean = RG;
-                        if(rg_clean){
-                            rg_clean = rg_clean.replaceAll(' ', '');
-                            rg_clean = rg_clean.replaceAll('.', '');
-                            rg_clean = rg_clean.replaceAll('/', '');
-                            rg_clean = rg_clean.replaceAll('-', '');
-                        }
-
-                        let cpf_clean = CPF;
-                        if(cpf_clean){
-                            cpf_clean = cpf_clean.replaceAll(' ', '');
-                            cpf_clean = cpf_clean.replaceAll('.', '');
-                            cpf_clean = cpf_clean.replaceAll('/', '');
-                            cpf_clean = cpf_clean.replaceAll('-', '');
-                        }
-
-                        let foundedCnpj = await pessoaServico.BuscarPessoaPeloEmail(cpf_clean);
-                        if(foundedCnpj != null) cpf_clean = '';
-
-                        await pessoaServico.RegistraPessoa(idPerson, idStudent, profile, 1, nome || '', NomeSocial || '', '', email || '', cep_clean || '', Endereco || '', limparNumeroEndereco(NumeroEndereco), Cidade || '', Estado || '', '', limparComplemento(ComplementoEndereco), Bairro || '', '', dtNascimento,  '',  '', birth_country || '', nacionalidade || '', sexo, etinia, rg_clean || '', OrgaoExpedidorRG || '', '', rg_issue_date || '', '', validarCPF(CPF) ? cpf_clean : '', '', estadoCivil, '', '', '', FoneResidencial || '', '', FoneCelular || '', '', FoneComercial || '', '', '', '', '', '', '', DocumentoMilitar || '', NroDocMilitar || '', '', TituloEleitor || '', dtTituloEleitor || '', '', '', TituloEleitorSessao || '', TituloEleitorZona || '', '', '', '', '', '', '',  '',  '', '', '', '', '', '', '', '', '', '',  '', '', '', '', '', '', '', '', '', '', '',   '',  '',  '',  '', '',  '', '', '', '', '', '', null, '', '', '', '', '');
-                    }
-                    count++;
-                }
-            }
-            ////////////////////////////////// FIM ALUNOS //////////////////////////////////
-
-            //////////////////////////////// INICIO PROFESSORES ////////////////////////////////
-            if(process.env.PESSOASPROFESSOR == 1){
-                const professorFACModel = await connectionSQLServer.query(`
-                    SELECT --"Funcionarios".*,
-                        "Funcionarios"."FuncionarioID" AS "AlunoID"
-                        , "EstadosCivis"."Descricao" as "EstadoCivil"
-                        , "Funcionarios"."Nome"
-                        , "Funcionarios"."NomeCompleto"
-                        , (CASE 
-                            WHEN "Funcionarios"."Sexo" = 'F' THEN 'Feminino'
-                            WHEN "Funcionarios"."Sexo" = 'M' THEN 'Masculino'
-                            ELSE '' END
-                        )AS "Sexo"
-                        , "Funcionarios"."DataNascimento"
-                        , "Funcionarios"."CPF"
-                        , "Funcionarios"."RG"
-                        , "Funcionarios"."Endereco"
-                        , COALESCE(CAST("Cidades"."Nome" AS text), '') AS "Cidade"
-                        , COALESCE(CAST("Cidades"."Estado" AS text), '') AS "Estado"
-                        , COALESCE(CAST("Bairros"."Nome" AS text), '') AS "Bairro"
-                        , "Funcionarios"."ComplementoEndereco"
-                        , "Funcionarios"."CEP"
-                        , "Funcionarios"."FoneResidencial"
-                        , "Funcionarios"."FoneCelular"
-                        , (
-                            CASE WHEN "Funcionarios"."Professor" = 1 THEN 'SIM'
-                            ELSE 'NAO' END
-                        ) as "Professor"
-                        , COALESCE(CAST("EmailsPessoas"."Email" AS text) ,'') AS "Email"
-                        , "Funcionarios"."Curriculo"
-                        , "Funcionarios"."NumeroMatricula"
-                        , "Funcionarios"."NumeroEndereco"
-                        , "Funcionarios"."Titulacao"
-                        ,'Brasileira' AS "Nacionalidade"
-                        ,'Brasil' AS "Pais"
-
-                    FROM "Funcionarios"
-                        LEFT JOIN "EstadosCivis" ON "EstadosCivis"."EstadoCivilID" = "Funcionarios"."EstadoCivilID"
-                        LEFT JOIN "Cidades" ON "Cidades"."CidadeID" = "Funcionarios"."CidadeID"
-                        LEFT JOIN "Bairros" ON "Bairros"."BairroID" = "Funcionarios"."BairroID"
-                        LEFT JOIN "EmailsPessoas" ON "EmailsPessoas"."FuncionarioID" = "Funcionarios"."FuncionarioID"    
-                `);
-                const listaDeProfessorFAC = professorFACModel[0];
-                count = 1;
-                for(let nomeProfessorFAC of listaDeProfessorFAC){
-                    console.log(`Processando ${count} de ${listaDeProfessorFAC.length} PROFESSORES ${nomeProfessorFAC.NomeCompleto}`);
-                    const {
-
-                        AlunoID, EstadoCivil, NomeCompleto, Sexo, DataNascimento, CPF, RG, Endereco, Cidade, Estado, Bairro, ComplementoEndereco, CEP, FoneResidencial,
-                        FoneCelular, Professor, Email, NumeroEndereco, Nacionalidade, Pais
-
-                    } = nomeProfessorFAC;
-                    let idPerson = parseInt('999' + AlunoID + '999');
-                    let idStudent = idPerson;
-
-                    let profile = Professor == 'SIM' ? 1 : 4;
-                    let dtNascimento = DataNascimento ? DataNascimento.split(' ')[0] : '';
-                    let dtTituloEleitor =  '';
-
-                    if (dtNascimento) {
-                        let [mes, dia, ano] = dtNascimento.split('/');
-                        dia = parseInt(dia);
-                        mes = parseInt(mes);
-                        dtNascimento = `${dia < 10 ? '0'+dia : dia}/${mes < 10 ? '0'+mes : mes}/${ano}`;
-                    }
-
-                    let rg_issue_date = '';
-
-                    let sexo = Sexo || '';
-                    let etinia = '';
-                    let estadoCivil = EstadoCivil || '';
-
-                    let nacionalidade = Nacionalidade || '';
-                    let birth_country = Pais || '';
-
-                    let email = Email|| "";
-                    if(email){
-                        let emailAux = email.normalize('NFD').replace(/[\u0300-\u036f]/g, "");
-                        if(validateEmail(emailAux)){
-                            //emailAux = emailAux.split(/(?<=[a-z0-9])(?=[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,})/i)[0];
-                            emailAux = emailAux.replaceAll(/[^a-zA-Z0-9@._]/g, '');
-                            emailAux = emailAux.replace(/\.$/, '');
-                            emailAux = emailAux.replace(/\.c$/, '.com');
-                            emailAux = emailAux.replace(/([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-z]{2,})(.*)/, '$1');
-                            emailAux = emailAux.replaceAll('.@.', '@');
-                            emailAux = emailAux.replaceAll('.@', '@');
-                            emailAux = emailAux.replaceAll('@.', '@');
-                            emailAux = emailAux.replaceAll(' ', '');
-                            email = emailAux;
-                        }
-                    }
-                    let ensinoMedioRegime = '';
-
-                    let rg_clean = RG;
-                    if(rg_clean){
-                        rg_clean = rg_clean.replaceAll(' ', '');
-                        rg_clean = rg_clean.replaceAll('.', '');
-                        rg_clean = rg_clean.replaceAll('/', '');
-                        rg_clean = rg_clean.replaceAll('-', '');
-                    }
-
-                    let cep_clean = CEP;
-                    if(cep_clean){
-                        cep_clean = cep_clean.replaceAll('.', '');
-                        cep_clean = cep_clean.replaceAll('-', '');
-                        cep_clean = cep_clean.replaceAll(' ', '');
-                    }
-
-                    if(NomeCompleto) {
-                        let nome = NomeCompleto;
-                        let auxname = `${nome}`;
-                        let arr = auxname.split(' ');
-                        if(arr.length == 1) nome += ' ajustar sponte';
-                        
-                        let foundedEmail = await pessoaServico.BuscarPessoaPeloEmail(email);
-                        if(foundedEmail != null) email = '';
-
-                        let cpf_clean = CPF;
-                        if(cpf_clean){
-                            cpf_clean = cpf_clean.replaceAll(' ', '');
-                            cpf_clean = cpf_clean.replaceAll('.', '');
-                            cpf_clean = cpf_clean.replaceAll('/', '');
-                            cpf_clean = cpf_clean.replaceAll('-', '');
-                        }
-
-                        let foundedCnpj = await pessoaServico.BuscarPessoaPeloEmail(cpf_clean);
-                        if(foundedCnpj != null) cpf_clean = '';
-
-                        await pessoaServico.RegistraPessoa(idPerson, idStudent, profile, 1, nome || '', '', '', email || '', cep_clean || '', Endereco || '', limparNumeroEndereco(NumeroEndereco), Cidade || '', Estado || '', '', limparComplemento(ComplementoEndereco), Bairro || '', '', dtNascimento,  '',  '', birth_country || '', nacionalidade || '', sexo, etinia, rg_clean || '',  '', '', rg_issue_date || '', '', validarCPF(CPF) ? cpf_clean : '', '', estadoCivil, '', '', '', FoneResidencial || '', '', FoneCelular || '', '', '', '', '', '', '', '', '',  '','', '',  '', dtTituloEleitor || '', '', '',  '',  '', '', '', '', '', '', '',  '',  '', '', '', '', '', '', '', '', '', '',  '', '', '', '', '', '', '', '', '', '', '',   '',  '',  '',  '', '',  '', '', '', '', '', '', null, '', '', '', '', '');
-                    }
-                    count++
-                    
-                }
-            }
-            ////////////////////////////////// FIM PROFESSORES //////////////////////////////////
-            /// NÃO MIGRADOS: '1164', '762', '827', '1125', '99918999', '999114999', '99987999'
-            ///EMPRESAS
-            if(process.env.PESSOASEMPRESAS == 1){
-                const EmpresasModel = await connectionSQLServer.query(`
-                    SELECT 
-                        "Empresas"."EmpresaID" AS "AlunoID"
-                        , "Empresas"."Nome"
-                        , "Empresas"."RazaoSocial"
-                        , "Empresas"."Endereco"
-                        , COALESCE(CAST("Cidades"."Nome" AS text), '') AS "Cidade"
-                        , COALESCE(CAST("Cidades"."Estado" AS text), '') AS "Estado"
-                        , COALESCE(CAST("Bairros"."Nome" AS text), '') AS "Bairro"
-                        , "Empresas"."CEP"
-                        , "Empresas"."CNPJ"
-                        , "Empresas"."ComplementoEndereco"
-                        , "Empresas"."Inscricao"
-                        , COALESCE(CAST("EmailsPessoas"."Email" AS text) ,'') AS "Email"
-                        , "Empresas"."Fone"
-                        , "Empresas"."NumeroEndereco"
-                        ,'Brasil' AS "Pais"
-                    FROM "Empresas"
-                        LEFT JOIN "Cidades" ON "Cidades"."CidadeID" = "Empresas"."CidadeID"
-                        LEFT JOIN "Bairros" ON "Bairros"."BairroID" = "Empresas"."BairroID"
-                        LEFT JOIN "EmailsPessoas" ON "EmailsPessoas"."FuncionarioID" = "Empresas"."EmpresaID"    
-                `);
-                const listaDeProfessorFAC = EmpresasModel[0];
-                count = 1;
-                for(let empresa of listaDeProfessorFAC){
-                    console.log(`Processando ${count} de ${listaDeProfessorFAC.length} EMPRESAS ${empresa.Nome}`);
-                    const {
-
-                        AlunoID, Nome, RazaoSocial, Endereco, Cidade, Estado, Bairro, CEP, CNPJ, ComplementoEndereco, Inscricao, 
-                        Email, Fone, NumeroEndereco, Pais
-
-                    } = empresa;
-                    let idPerson = parseInt('888' + AlunoID + '888');
-                    let idStudent = idPerson;
-
-                    let profile = null;
-                    let dtNascimento =  '';
-                    let dtTituloEleitor =  '';
-
-                    let rg_issue_date = '';
-
-                    let sexo =  '';
-                    let etinia = '';
-                    let estadoCivil =  '';
-
-                    let nacionalidade = '';
-                    let birth_country = Pais || '';
-
-                    let email = Email|| "";
-                    if(email){
-                        let emailAux = email.normalize('NFD').replace(/[\u0300-\u036f]/g, "");
-                        if(validateEmail(emailAux)){
-                            //emailAux = emailAux.split(/(?<=[a-z0-9])(?=[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,})/i)[0];
-                            emailAux = emailAux.replaceAll(/[^a-zA-Z0-9@._]/g, '');
-                            emailAux = emailAux.replace(/\.$/, '');
-                            emailAux = emailAux.replace(/\.c$/, '.com');
-                            emailAux = emailAux.replace(/([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-z]{2,})(.*)/, '$1');
-                            emailAux = emailAux.replaceAll('.@.', '@');
-                            emailAux = emailAux.replaceAll('.@', '@');
-                            emailAux = emailAux.replaceAll('@.', '@');
-                            emailAux = emailAux.replaceAll(' ', '');
-                            email = emailAux;
-                        }
-                    }
-                    let ensinoMedioRegime = '';
-
-                    let cep_clean = CEP;
-                    if(cep_clean){
-                        cep_clean = cep_clean.replaceAll('.', '');
-                        cep_clean = cep_clean.replaceAll('-', '');
-                        cep_clean = cep_clean.replaceAll(' ', '');
-                    }
-
-                    if(Nome) {
-                        let nome = Nome;
-                        let auxname = `${nome}`;
-                        let arr = auxname.split(' ');
-                        if(arr.length == 1) nome += ' ajustar sponte';
-                        let razao_social = RazaoSocial;
-
-                        auxname = `${razao_social}`;
-                        arr = auxname.split(' ');
-                        if(arr.length == 1) razao_social += ' ajustar sponte';
-
-                        let cpnj_clean = CNPJ;
-                        if(cpnj_clean){
-                            cpnj_clean = cpnj_clean.replaceAll(' ', '');
-                            cpnj_clean = cpnj_clean.replaceAll('.', '');
-                            cpnj_clean = cpnj_clean.replaceAll('/', '');
-                            cpnj_clean = cpnj_clean.replaceAll('-', '');
-                        }
-
-                        let foundedEmail = await pessoaServico.BuscarPessoaPeloEmail(email);
-                        if(foundedEmail != null) email = '';
-
-                        let foundedCnpj = await pessoaServico.BuscarPessoaPeloEmail(cpnj_clean);
-                        if(foundedCnpj != null) cpnj_clean = '';
-
-
-                        await pessoaServico.RegistraPessoa(idPerson, idStudent, profile, 2, nome || '', '', razao_social || '', email || '', cep_clean || '', Endereco || '', limparNumeroEndereco(NumeroEndereco), Cidade || '', Estado || '', '', limparComplemento(ComplementoEndereco), Bairro || '', '', dtNascimento,  '',  '', birth_country || '', nacionalidade || '', sexo, etinia,  '',  '', '', rg_issue_date || '', '', '', cpnj_clean || '', estadoCivil, '', '', '', Fone || '', '', '', '', '', '', '', '', '', '', '',  '','', '',  '', dtTituloEleitor || '', '', '',  '',  '', '', '', '', '', '', '',  '',  '', '', '', '', '', '', '', '', '', '',  '', '', '', '', '', '', '', '', '', '', '',   '',  '',  '',  '', '',  '', '', '', '', '', '', null, '', '', '', '', '');
-                    }
-                    count++
-                    
-                }
-            }
-            console.log('FIM PROCESSANDO PESSOAS')
-        }
-        //////////////////////////// INICIO RESPONSAVEIS (SPONTE) ////////////////////////////
-        if (process.env.PESSOASRESPONSAVEIS == 1) {
-            console.log('INICIO PROCESSANDO RESPONSAVEIS')
-            log('INICIO PROCESSANDO RESPONSAVEIS')
-
-            const responsaveisModel = await connectionSQLServer.query(`
-                SELECT
-                    "Responsaveis"."ResponsavelID"
-                    , "Responsaveis"."Nome"
-                    , COALESCE(CAST("Responsaveis"."CPF" AS text), '') AS "CPF"
-                    , COALESCE(CAST("Responsaveis"."RG" AS text), '') AS "RG"
-                    , COALESCE(CAST("Responsaveis"."OrgaoExpedidorRG" AS text), '') AS "OrgaoExpedidorRG"
-                    , COALESCE(CAST("Responsaveis"."DataExpedicaoRG" AS text), '') AS "DataExpedicaoRG"
-                    , COALESCE(CAST("Responsaveis"."DataNascimento" AS text), '') AS "DataNascimento"
-                    , (CASE
-                        WHEN "Responsaveis"."Sexo" = 'F' THEN 'Feminino'
-                        WHEN "Responsaveis"."Sexo" = 'M' THEN 'Masculino'
-                        ELSE '' END
-                    ) AS "Sexo"
-                    , COALESCE(CAST("Responsaveis"."Endereco" AS text), '') AS "Endereco"
-                    , COALESCE(CAST("Responsaveis"."NumeroEndereco" AS text), '') AS "NumeroEndereco"
-                    , COALESCE(CAST("Responsaveis"."ComplementoEndereco" AS text), '') AS "ComplementoEndereco"
-                    , COALESCE(CAST("Responsaveis"."CEP" AS text), '') AS "CEP"
-                    , COALESCE(CAST("Cidades"."Nome" AS text), '') AS "Cidade"
-                    , COALESCE(CAST("Cidades"."Estado" AS text), '') AS "Estado"
-                    , COALESCE(CAST("Bairros"."Nome" AS text), '') AS "Bairro"
-                    , COALESCE(CAST("EstadosCivis"."Descricao" AS text), '') AS "EstadoCivil"
-                    , COALESCE(CAST("Responsaveis"."FoneResidencial" AS text), '') AS "FoneResidencial"
-                    , COALESCE(CAST("Responsaveis"."FoneCelular" AS text), '') AS "FoneCelular"
-                    , COALESCE(CAST("Responsaveis"."FoneComercial" AS text), '') AS "FoneComercial"
-                    , COALESCE(CAST("Responsaveis"."Profissao" AS text), '') AS "Profissao"
-                    , COALESCE(CAST(email."Email" AS text), '') AS "Email"
-                    , 'Brasileira' AS "Nacionalidade"
-                    , 'Brasil' AS "Pais"
-                FROM "Responsaveis"
-                    -- traz TODOS os responsaveis do Sponte, inclusive os sem vinculo com aluno.
-                    -- LEFT JOIN (nao INNER) so para saber quem tem vinculo, sem filtrar ninguem.
-                    LEFT JOIN (SELECT DISTINCT "ResponsavelID" FROM "AlunosResponsaveis") vinculados
-                           ON vinculados."ResponsavelID" = "Responsaveis"."ResponsavelID"
-                    -- CidadeID e BairroID sao codigos: a Gennera espera o nome em texto
-                    LEFT JOIN "Cidades" ON "Cidades"."CidadeID" = "Responsaveis"."CidadeID"
-                    LEFT JOIN "Bairros" ON "Bairros"."BairroID" = "Responsaveis"."BairroID"
-                    LEFT JOIN "EstadosCivis" ON "EstadosCivis"."EstadoCivilID" = "Responsaveis"."EstadoCivilID"
-                    -- Responsaveis."Email" esta vazia; o e-mail real vive em EmailsPessoas.
-                    -- LATERAL com LIMIT 1 evita duplicar a linha de quem tem mais de um e-mail
-                    LEFT JOIN LATERAL (
-                        SELECT ep."Email"
-                        FROM "EmailsPessoas" ep
-                        WHERE ep."ResponsavelID" = "Responsaveis"."ResponsavelID"
-                          AND NULLIF(TRIM(ep."Email"), '') IS NOT NULL
-                        ORDER BY ep."Padrao" DESC NULLS LAST, ep."EmailPessoaID"
-                        LIMIT 1
-                    ) email ON TRUE
-                -- ordem fixa: quem tem e-mail repetido perde o e-mail para quem vem antes,
-                -- entao a carga precisa ser reproduzivel entre execucoes
-                ORDER BY "Responsaveis"."ResponsavelID"
-            `);
-            const responsaveis = responsaveisModel[0];
-            let count = 1;
-            for (let responsavel of responsaveis) {
-                console.log(`Processando ${count} de ${responsaveis.length} RESPONSAVEIS`);
-                log(`Processando ${count} de ${responsaveis.length} RESPONSAVEIS`);
-                const { ResponsavelID, Nome, CPF, RG, OrgaoExpedidorRG, DataExpedicaoRG, DataNascimento, Sexo,
-                    Endereco, NumeroEndereco, ComplementoEndereco, CEP, Cidade, Estado, Bairro, EstadoCivil,
-                    FoneResidencial, FoneCelular, FoneComercial, Profissao, Email, Nacionalidade, Pais } = responsavel;
-
-                // prefixo obrigatorio: ResponsavelID colide com AlunoID na mesma faixa numerica
-                let idPerson = parseInt('777' + ResponsavelID + '777');
-                // responsavel nao e aluno: id_student fica em branco
-                let idStudent = '';
-                let profile = 5;
-
-                let dtNascimento = DataNascimento ? DataNascimento.split(' ')[0] : '';
-                if (dtNascimento) {
-                    let [mes, dia, ano] = dtNascimento.split('/');
-                    dia = parseInt(dia);
-                    mes = parseInt(mes);
-                    dtNascimento = `${dia < 10 ? '0'+dia : dia}/${mes < 10 ? '0'+mes : mes}/${ano}`;
-                }
-
-                let rg_issue_date = DataExpedicaoRG ? DataExpedicaoRG.split(' ')[0] : '';
-                if (rg_issue_date) {
-                    let [mes, dia, ano] = rg_issue_date.split('/');
-                    dia = parseInt(dia);
-                    mes = parseInt(mes);
-                    rg_issue_date = `${dia < 10 ? '0'+dia : dia}/${mes < 10 ? '0'+mes : mes}/${ano}`;
-                }
-
-                let sexo = Sexo || '';
-                let etinia = ''; // Responsaveis nao tem coluna Cor
-                let estadoCivil = EstadoCivil || '';
-                let nacionalidade = Nacionalidade || '';
-                let birth_country = Pais || '';
-
-                // 59 dos 99 valores de Profissao contem apenas pontuacao
-                let profissao = Profissao && /[a-zA-Z0-9]/.test(Profissao) ? Profissao.trim() : '';
-
-                let email = Email || "";
-                if (email) {
-                    let emailAux = email.normalize('NFD').replace(/[\u0300-\u036f]/g, "");
-                    if (validateEmail(emailAux)) {
-                        emailAux = emailAux.replaceAll(/[^a-zA-Z0-9@._]/g, '');
-                        emailAux = emailAux.replace(/\.$/, '');
-                        emailAux = emailAux.replace(/\.c$/, '.com');
-                        emailAux = emailAux.replace(/([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-z]{2,})(.*)/, '$1');
-                        emailAux = emailAux.replaceAll('.@.', '@');
-                        emailAux = emailAux.replaceAll('.@', '@');
-                        emailAux = emailAux.replaceAll('@.', '@');
-                        emailAux = emailAux.replaceAll(' ', '');
-                        email = emailAux;
-                    }
-                }
-
-                let cep_clean = CEP;
-                if (cep_clean) {
-                    cep_clean = cep_clean.replaceAll('.', '');
-                    cep_clean = cep_clean.replaceAll('-', '');
-                    cep_clean = cep_clean.replaceAll(' ', '');
-                }
-
-                if (Nome) {
-                    let nome = Nome;
-                    let auxname = `${nome}`;
-                    let arr = auxname.split(' ');
-                    if (arr.length == 1) nome += ' ajustar sponte';
-
-                    let foundedEmail = await pessoaServico.BuscarPessoaPeloEmail(email);
-                    if (foundedEmail != null) email = '';
-
-                    let rg_clean = RG;
-                    if (rg_clean) {
-                        rg_clean = rg_clean.replaceAll(' ', '');
-                        rg_clean = rg_clean.replaceAll('.', '');
-                        rg_clean = rg_clean.replaceAll('/', '');
-                        rg_clean = rg_clean.replaceAll('-', '');
-                    }
-
-                    let cpf_clean = CPF;
-                    if (cpf_clean) {
-                        cpf_clean = cpf_clean.replaceAll(' ', '');
-                        cpf_clean = cpf_clean.replaceAll('.', '');
-                        cpf_clean = cpf_clean.replaceAll('/', '');
-                        cpf_clean = cpf_clean.replaceAll('-', '');
-                    }
-
-                    await pessoaServico.RegistraPessoa(idPerson, idStudent, profile, 1, nome || '', '', '', email || '', cep_clean || '', Endereco || '', limparNumeroEndereco(NumeroEndereco), Cidade || '', Estado || '', '', limparComplemento(ComplementoEndereco), Bairro || '', '', dtNascimento, '', '', birth_country || '', nacionalidade || '', sexo, etinia, rg_clean || '', OrgaoExpedidorRG || '', '', rg_issue_date || '', '', validarCPF(CPF) ? cpf_clean : '', '', estadoCivil, profissao, '', '', FoneResidencial || '', '', FoneCelular || '', '', FoneComercial || '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', null, null, '', '', '', '', '');
-                }
-                count++;
-            }
-
-            // o CPF pertence ao responsavel: limpa o que foi digitado no cadastro do aluno.
-            // sem isso a deduplicacao do CSVPESSOAS descartaria 25 pessoas do arquivo.
-            const connectionDl = require('../database/database');
-            await connectionDl.query(`
-                UPDATE tb_persons a SET cpf = ''
-                WHERE a.profile = 2 AND a.cpf <> ''
-                  AND EXISTS (SELECT 1 FROM tb_persons r WHERE r.profile = 5 AND r.cpf = a.cpf)
-            `);
-
-            console.log('FIM PROCESSANDO RESPONSAVEIS')
-        }
-        //////////////////////////// FIM RESPONSAVEIS (SPONTE) ////////////////////////////
-
-
-        if (process.env.CSVPESSOAS == 1) {
-            console.log('INICIO GERANDO CSV PESSOAS');
-            const pessoasEmailGennera = await pessoaServico.BuscaTodasPessoasQueEmailNaoEVazio();
-            const pessoasCPFGennera = await pessoaServico.BuscaTodasPessoasQueCPFNaoEVazio();
-            const pessoasGennera = await pessoaServico.BuscaTodasPessoasQueCPFeEMAILeEVazio();
-
-            const listaSemDuplicacaoDeEmailAux = pessoaServico.RemovePessoasDuplicadasPeloEmail(pessoasEmailGennera);
-            const listaSemDuplicacaoDeCPFAux = pessoaServico.RemovePessoasDuplicadasPeloCPF(pessoasCPFGennera);
-            const listaSemDuplicacaoDeEmail = pessoaServico.RemovePessoasDuplicadasPeloEmail(listaSemDuplicacaoDeEmailAux.concat(listaSemDuplicacaoDeCPFAux));
-            const listaSemDuplicacaoDeCPF = pessoaServico.RemovePessoasDuplicadasPeloCPF(listaSemDuplicacaoDeEmail);
-            const listaDePessoas = listaSemDuplicacaoDeCPF.concat(pessoasGennera);
-            const pessoas = pessoaServico.RemovePessoasDuplicadasPelo_id_Person(listaDePessoas);
-            const layoutService = new LayoutService('Pessoas');
-            await layoutService.CreateFile(pessoas);
-            console.log('FIM GERANDO CSV PESSOAS');
-        }
-        
-        /* BLOCO DO EXTRATOR GIZ - DESATIVADO PARA O SPONTE.
-           Le a tabela RESPONS (inexistente no Sponte) com sintaxe T-SQL (ISNULL, concatenacao com +).
-           Substituido pelo bloco PESSOASRESPONSAVEIS acima. Preservado para consulta.
-        if (process.env.PESSOASCONTRATOS == 1) {
-            console.log('INICIO PROCESSANDO PESSOAS')
-            log('INICIO PROCESSANDO PESSOAS')
-            //////////////////////////////// INICIO ALUNOS ////////////////////////////////
-
-            const pessoasModel = await connectionSQLServer.query(`
-                select 
-    --*,
-    '9999' + RESPONS.COD_RESP AS "COD_RESP",
-    ISNULL(RESPONS.CEP, '') AS CEP,
-    ISNULL(RESPONS.ENDERECO,'') AS ENDERECO,
-    ISNULL(RESPONS.RPS_NUMEROEND, '') AS "NUMERO",
-    ISNULL(RESPONS.BAIRRO,'') AS BAIRRO,
-    ISNULL(RESPONS.CIDADE,'') AS CIDADE,
-    ISNULL(RESPONS.ESTADO,'') AS ESTADO,
-    RESPONS.NOME, --01701
-    RESPONS.CPF,
-    ISNULL(RESPONS.IDENTIDADE, '') AS "RG",
-    ISNULL(RESPONS.ORGAOEXPEDIDOR, '') AS "RG_ORGAO_EXPEDIDOR",
-    ISNULL(RESPONS.DATA_NASC,'') AS DATA_NASC,
-    ISNULL(RESPONS.PAI,'') AS PAI,
-    ISNULL(RESPONS.MAE,'') AS MAE,
-    ISNULL(RESPONS.EMAIL, '') AS EMAIL,
-    ISNULL(RESPONS.TELEFONE, '') AS TELEFONE
-from Responsaveis as RESPONS
---WHERE CPF in ('08198337000167', '04857758000100', '0242894267', '0357571240', '0318883210', '0394585000171', '075101602272', '0811415210', '0194152227', '02785853000101')
-            `);
-            const pessoas = pessoasModel[0];
-            let count = 1;
-            if(process.env.PESSOASCONTRATOS == 1){
-                for (let pessoa of pessoas) {
-                    console.log(`Processando ${count} de ${pessoas.length} ALUNOS`);
-                    log(`Processando ${count} de ${pessoas.length} ALUNOS`);
-                    const { COD_RESP, CEP, ENDERECO, NUMERO, BAIRRO, CIDADE, ESTADO, NOME, CPF, RG, RG_ORGAO_EXPEDIDOR, DATA_NASC, PAI, MAE, EMAIL, TELEFONE  } = pessoa;
-                    let idPerson = COD_RESP;
-                    let idStudent = COD_RESP;
-                    let profile =  null;
-
-                    let dataNascimento = DATA_NASC ? DATA_NASC.toISOString() : '';
-                    if (dataNascimento) dataNascimento = `${dataNascimento.substring(8, 10)}/${dataNascimento.substring(5, 7)}/${dataNascimento.substring(0, 4)}`;
-                    let rg_issue_date = '';
-
-
-                    let sexo = '';
-                    let etinia = '';
-                    let estadoCivil = '';
-                    let nacionalidade = '';
-                    let birth_country = '';
-                    let email = "";
-                    if(EMAIL){
-                        let emailAux = EMAIL.normalize('NFD').replace(/[\u0300-\u036f]/g, "");
-                        if(validateEmail(emailAux)){
-                            //emailAux = emailAux.split(/(?<=[a-z0-9])(?=[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,})/i)[0];
-                            emailAux = emailAux.replaceAll(/[^a-zA-Z0-9@._]/g, '');
-                            emailAux = emailAux.replace(/\.$/, '');
-                            emailAux = emailAux.replace(/\.c$/, '.com');
-                            emailAux = emailAux.replace(/([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-z]{2,})(.*)/, '$1');
-                            emailAux = emailAux.replaceAll('.@.', '@');
-                            emailAux = emailAux.replaceAll('.@', '@');
-                            emailAux = emailAux.replaceAll('@.', '@');
-                            emailAux = emailAux.replaceAll(' ', '');
-                            email = emailAux;
-                        }
-                    }
-                    let ensinoMedioRegime = '';
-
-                    if(NOME) {
-                        let nome = NOME;
-                        let auxname = `${nome}`;
-                        let arr = auxname.split(' ');
-                        if(arr.length == 1) nome += ' ajustar sponte';
-                        await pessoaServico.RegistraPessoa(idPerson, idStudent, profile, 1, nome || '', '', '', email || '', CEP || '', ENDERECO || '', NUMERO || '', CIDADE || '', ESTADO || '', '', '', BAIRRO || '', '', dataNascimento, '', '', birth_country || '', nacionalidade || '', sexo, etinia, RG || '', RG_ORGAO_EXPEDIDOR || '', '', rg_issue_date || '', '', '', CPF || '', estadoCivil, '', '', '', TELEFONE || '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '',  '', '', '', '', '', '', '', PAI || '', MAE || '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '',  '',  '',  '',  '', '',  '', '', '', '', '', '', null, '', ensinoMedioRegime, '', '', '');
-                    }
-                    count++;
-                }
-            }
-            ////////////////////////////////// FIM ALUNOS //////////////////////////////////
-
-            console.log('FIM PROCESSANDO PESSOAS')
-        }
-        */
-
-        if (process.env.CSVPESSOASBYSELECT == 1) {
-            console.log('INICIO GERANDO CSV PESSOAS by select');
-            const connection = require('../database/database');
-
-            let pessoas = await connection.query(`
-            
-                SELECT * FROM public.tb_persons where "id_student" IN (
-                '122', '143', '153', '168', '192', '237', '268', '366', '383', '410', '413', '498', '535', '623', '632', '712', '721', '728', '752', '768', '851', '860', '867', '872', '902', '904', '967', '1133', '1231', '1264', '1269', '1280', '1290', '1293', '1294', '1301', '1323', '1327', '1359', '1428', '1429', '1430', '1431', '1432', '1434', '1435', '1436', '1437', '1438', '1439', '1440', '1442', '1444', '1445', '1454', '1455', '1471', '1517', '1575', '1582', '1587', '1593', '1602', '1606', '1611', '1614', '1620', '1636', '1645', '1647', '1665', '1667', '1668', '1669', '1671', '1672', '1675', '1677', '1680', '1683', '1684', '1687', '1688', '1689', '1690', '1691', '1693', '1696', '1697', '1699', '1700', '1704', '1705', '1706', '1707', '1710', '1713', '1714', '1716', '1718', '1720', '1721', '1722', '1723', '1724', '1725', '1726', '1727', '1728', '1729', '1730', '1731', '1732', '1733', '1734', '1735', '1736', '1738', '1739'
-                )
-
-
-            `);
-
-            if(pessoas[0].length) pessoas =pessoas[0];
-
-            const layoutService = new LayoutService(`Pessoas_PreMatricula`);
-            await layoutService.CreateFileManual(pessoas);
-            console.log('FIM GERANDO CSV PESSOAS by select');
-        }
-        
-        
-
-        if (process.env.CSVPESSOASPROFBYSELECT == 1) {
-            console.log('INICIO GERANDO CSV PESSOAS PROFESSOR by select');
-            const connection = require('../database/database');
-            let pessoas = await connection.query(`
-            SELECT * FROM public.tb_persons WHERE "profile" = 1
-            `);
-
-            if(pessoas[0].length) pessoas =pessoas[0];
-            else pessoas = null;
-
-            if(pessoas != null){
-                const layoutService = new LayoutService('Pessoas_Professor_By_Select');
-                await layoutService.CreateFileManual(pessoas);
-            }
-            console.log('FIM GERANDO CSV PESSOAS PROFESSOR by select');
-        }
-
+class PessoaService {
+
+    constructor() {
+        this.pessoaServico = new PersonService();
+        this.filiacaoServico = new FiliationService();
+        this.lookups = null;
+        this.emailsUsados = new Set();
+        this.cpfsUsados = new Set();
     }
 
-    async ProcessarFiliacao(){
-        const filiacaoServico = new FiliationService();
-        const pessoaServico = new PersonService();
-        //////////////////////////// INICIO FILIACAO (SPONTE) ////////////////////////////
-        if (process.env.FILIACAO == 1) { /// .env
-            console.log('INICIO PROCESSANDO FILIACAO')
-            log('INICIO PROCESSANDO FILIACAO')
+    async CarregarLookups() {
+        if (this.lookups) return this.lookups;
+        log('Carregando tabelas de apoio (CADCID, PAISES, CADPROFI, CADETDCV, CARTORIOS, ENDALNS)');
 
-            const filiacoesModel = await connectionSQLServer.query(`
-                SELECT
-                    ar."AlunoID"
-                    , ar."ResponsavelID"
-                    -- grau de parentesco do proprio Sponte; sem tipo, cai em "Responsável"
-                    , COALESCE(t."Descricao", 'Responsável') AS "Parentesco"
-                    , (a."ResponsavelFinanceiroID" = ar."ResponsavelID") AS "EhFinanceiro"
-                FROM "AlunosResponsaveis" ar
-                    -- INNER: nao gera vinculo apontando para aluno inexistente
-                    INNER JOIN "Alunos" a ON a."AlunoID" = ar."AlunoID"
-                    LEFT JOIN "TiposResponsaveis" t
-                           ON t."TipoResponsavelID" = ar."TipoResponsavelID"
-                ORDER BY ar."AlunoID", ar."AlunoResponsavelID"
-            `);
-            const filiacoes = filiacoesModel[0];
-            let count = 1;
-            for (let filiacao of filiacoes) {
-                console.log(`Processando ${count} de ${filiacoes.length} FILIACOES`);
-                log(`Processando ${count} de ${filiacoes.length} FILIACOES`);
-                const { AlunoID, ResponsavelID, Parentesco, EhFinanceiro } = filiacao;
+        const [cidades] = await origem.query('SELECT "CODIGO", "CIDADE", "UF" FROM "CADCID"');
+        const [paises] = await origem.query('SELECT "CODIGO", "PAIS" FROM "PAISES"');
+        const [profissoes] = await origem.query('SELECT "CODIGO", "PROFISSAO" FROM "CADPROFI"');
+        const [estadosCivis] = await origem.query('SELECT "CODIGO", "ESTADOCIVIL" FROM "CADETDCV"');
+        const [cartorios] = await origem.query('SELECT "CODIGO", "CARTORIO", "CIDADE" FROM "CARTORIOS"');
+        const [enderecos] = await origem.query('SELECT "ALUNO", "ENDERECO", "BAIRRO", "CIDADE", "CEP" FROM "ENDALNS"');
 
-                // mesmo esquema da carga de pessoas: responsavel leva prefixo, aluno vai cru
-                let idPerson = parseInt('777' + ResponsavelID + '777');
-                let idStudent = AlunoID;
+        const mapa = (linhas, chave, montar) => {
+            const m = new Map();
+            for (const l of linhas) {
+                const k = N.txt(l[chave]);
+                if (k !== '' && !m.has(k)) m.set(k, montar(l));
+            }
+            return m;
+        };
 
-                await filiacaoServico.RegistraFiliation(
-                    idPerson, idStudent, normalizaParentesco(Parentesco), !!EhFinanceiro
+        this.lookups = {
+            cidades: mapa(cidades, 'CODIGO', l => ({ cidade: N.txt(l.CIDADE), uf: N.txt(l.UF) })),
+            paises: mapa(paises, 'CODIGO', l => N.txt(l.PAIS)),
+            profissoes: mapa(profissoes, 'CODIGO', l => N.txt(l.PROFISSAO)),
+            estadosCivis: mapa(estadosCivis, 'CODIGO', l => N.txt(l.ESTADOCIVIL)),
+            cartorios: mapa(cartorios, 'CODIGO', l => ({ nome: N.txt(l.CARTORIO), cidade: N.codigo(l.CIDADE) })),
+            enderecos: mapa(enderecos, 'ALUNO', l => ({
+                endereco: N.txt(l.ENDERECO), bairro: N.txt(l.BAIRRO),
+                cidade: N.codigo(l.CIDADE), cep: N.txt(l.CEP)
+            }))
+        };
+
+        const dupEnderecos = enderecos.length - this.lookups.enderecos.size;
+        log(`Apoio carregado: ${this.lookups.cidades.size} cidades, ${this.lookups.paises.size} paises, ` +
+            `${this.lookups.profissoes.size} profissoes, ${this.lookups.estadosCivis.size} estados civis, ` +
+            `${this.lookups.cartorios.size} cartorios, ${this.lookups.enderecos.size} enderecos` +
+            (dupEnderecos > 0 ? ` (${dupEnderecos} aluno(s) com mais de um endereco - usado o primeiro)` : ''));
+
+        return this.lookups;
+    }
+
+    Cidade(codigoCidade) {
+        const cod = N.codigo(codigoCidade);
+        if (!cod) return { cidade: '', uf: '' };
+        return this.lookups.cidades.get(cod) || { cidade: '', uf: '' };
+    }
+
+    Lookup(mapaNome, codigoBruto) {
+        const cod = N.codigo(codigoBruto);
+        if (!cod) return '';
+        return this.lookups[mapaNome].get(cod) || '';
+    }
+
+    async CarregarChavesJaUsadas() {
+        const [linhas] = await require('../database/database').query(
+            "SELECT email, cpf FROM tb_persons WHERE COALESCE(email,'') <> '' OR COALESCE(cpf,'') <> ''"
+        );
+        for (const l of linhas) {
+            if (l.email) this.emailsUsados.add(l.email);
+            if (l.cpf) this.cpfsUsados.add(l.cpf);
+        }
+        if (linhas.length > 0) log(`Ja existiam ${linhas.length} pessoa(s) com email/cpf no data lake`);
+    }
+
+    EmailUnico(valor) {
+        const e = N.email(valor);
+        if (e === '' || this.emailsUsados.has(e)) return '';
+        this.emailsUsados.add(e);
+        return e;
+    }
+
+    CpfUnico(valor) {
+        const c = N.cpf(valor);
+        if (c === '' || this.cpfsUsados.has(c)) return '';
+        this.cpfsUsados.add(c);
+        return c;
+    }
+
+    async ProcessarPessoas() {
+        if (process.env.PESSOAS != 1) return;
+
+        log('=========== INICIO PESSOAS ===========');
+        await this.CarregarLookups();
+        await this.CarregarChavesJaUsadas();
+
+        if (process.env.PESSOASRESPONSAVEIS == 1) await this.ProcessarResponsaveis();
+        if (process.env.PESSOASALUNOS == 1) await this.ProcessarAlunos();
+        if (process.env.PESSOASPROFESSOR == 1) await this.ProcessarProfessores();
+        if (process.env.PESSOASFUNCIONARIOS == 1) await this.ProcessarFuncionarios();
+
+        log('=========== FIM PESSOAS ===========');
+    }
+
+    async ProcessarResponsaveis() {
+        log('--- RESPONSAVEIS (ALUNOSRESP) ---');
+        const [linhas] = await origem.query(`
+            SELECT "CODIGO", "NOME", "PESSOAFJ", "SEXO", "ESTADOCIVIL", "CIC_CPF",
+                   "RG", "RG_UF", "RG_OE", "RG_DE",
+                   "FONERES", "FONECOM", "FONECEL",
+                   "NASCIMENTO", "CIDADENASCIMENTO", "NACIONALIDADE", "PROFISSAO",
+                   "EMAIL", "RELIGIAO",
+                   "CEP", "ENDERECO", "BAIRRO", "CIDADE"
+              FROM "ALUNOSRESP"
+             ORDER BY "CODIGO"
+        `);
+
+        let n = 0;
+        for (const r of linhas) {
+            n++;
+            const nome = N.txt(r.NOME);
+            if (nome === '') { log(`Responsavel ${r.CODIGO} sem nome - ignorado`); continue; }
+
+            const end = N.endereco(r.ENDERECO);
+            const cidade = this.Cidade(r.CIDADE);
+            const nasc = this.Cidade(r.CIDADENASCIMENTO);
+            const fone = N.telefone(r.FONERES);
+            const cel = N.telefone(r.FONECEL);
+            const com = N.telefone(r.FONECOM);
+
+            await this.pessoaServico.RegistraPessoa(...paraArgumentos({
+                id_person: N.idResponsavel(r.CODIGO),
+                id_student: '',
+                profile: 5,
+                type: N.txt(r.PESSOAFJ).toUpperCase() === 'J' ? 2 : 1,
+
+                name: N.nomePessoa(r.NOME),
+                email: this.EmailUnico(r.EMAIL),
+                country: 'Brasil',
+                birth_country: 'Brasil',
+
+                zipcode: N.cep(r.CEP),
+                street: end.street,
+                street_number: N.limparNumeroEndereco(end.street_number),
+                complement: N.limparComplemento(end.complement),
+                neighborhood: N.txt(r.BAIRRO),
+                city: cidade.cidade,
+                state: cidade.uf,
+
+                birthdate: N.data(r.NASCIMENTO),
+                birthplace: nasc.cidade,
+                birth_state: nasc.uf,
+                nationality: this.Lookup('paises', r.NACIONALIDADE),
+
+                gender: N.sexo(r.SEXO),
+                civil_status: N.estadoCivil(this.Lookup('estadosCivis', r.ESTADOCIVIL)),
+                profession: this.Lookup('profissoes', r.PROFISSAO),
+                religion: N.txt(r.RELIGIAO),
+
+                cpf: this.CpfUnico(r.CIC_CPF),
+                rg: N.txt(r.RG).replace(/[.\-/\s]/g, ''),
+                rg_issuing_agency: N.txt(r.RG_OE),
+                rg_issuing_state: N.txt(r.RG_UF),
+                rg_issue_date: N.data(r.RG_DE),
+
+                telephone_area_code: fone.ddd,
+                telephone_number: fone.numero,
+                mobile_phone_area_code: cel.ddd,
+                mobile_phone_number: cel.numero,
+                commercial_phone_area_code: com.ddd,
+                commercial_phone_number: com.numero
+            }));
+
+            if (n % 500 === 0) log(`Responsaveis: ${n}/${linhas.length}`);
+        }
+        log(`--- RESPONSAVEIS concluido: ${n} de ${linhas.length} ---`);
+    }
+
+    async ProcessarAlunos() {
+        log('--- ALUNOS ---');
+        const [linhas] = await origem.query(`
+            SELECT "CODIGO", "NOME", "APELIDO", "SEXO", "ESTADOCIVIL", "COR",
+                   "CIC_CPF", "RG", "RG_OE", "RG_DE", "RG_UF",
+                   "NASCIMENTO", "CIDADENASCIMENTO", "NACIONALIDADE", "PROFISSAO", "RELIGIAO",
+                   "FONE", "FONECOM", "CELULAR", "EMAIL",
+                   "CERTNASCIMENTO", "CERTNASCIMENTOFOLHA", "CERTNASCIMENTOLIVRO",
+                   "CERTNASCIMENTODE", "CERTNASCIMENTOCODCARTORIO",
+                   "CERTRESERVISTA", "CERTRESERVISTA_SERIE", "CERTRESERVISTA_EMISSOR",
+                   "TITULOELEITOR", "TITULOELEITOR_ZONA", "TITULOELEITOR_SECAO",
+                   "TITULOELEITOR_EMISSAO", "TITULOELEITOR_UF",
+                   "NOMEPAI", "NOMEMAE"
+              FROM "ALUNOS"
+             ORDER BY "CODIGO"
+        `);
+
+        let n = 0, semEndereco = 0;
+        for (const a of linhas) {
+            n++;
+            const nome = N.txt(a.NOME);
+            if (nome === '') { log(`Aluno ${a.CODIGO} sem nome - ignorado`); continue; }
+
+            const end = this.lookups.enderecos.get(N.txt(a.CODIGO));
+            if (!end) semEndereco++;
+            const partes = end ? N.endereco(end.endereco) : { street: '', street_number: '', complement: '' };
+            const cidade = end ? this.Cidade(end.cidade) : { cidade: '', uf: '' };
+
+            const nasc = this.Cidade(a.CIDADENASCIMENTO);
+            const cartorio = this.lookups.cartorios.get(N.codigo(a.CERTNASCIMENTOCODCARTORIO) || '');
+            const cartorioUF = cartorio ? this.Cidade(cartorio.cidade).uf : '';
+
+            const fone = N.telefone(a.FONE);
+            const cel = N.telefone(a.CELULAR);
+            const com = N.telefone(a.FONECOM);
+
+            await this.pessoaServico.RegistraPessoa(...paraArgumentos({
+                id_person: N.idAluno(a.CODIGO),
+                id_student: N.idAluno(a.CODIGO),
+                profile: 2,
+                type: 1,
+
+                name: N.nomePessoa(a.NOME),
+                social_name: N.txt(a.APELIDO),
+                email: this.EmailUnico(a.EMAIL),
+                country: 'Brasil',
+                birth_country: 'Brasil',
+                academic_registration: N.txt(a.CODIGO),
+
+                zipcode: end ? N.cep(end.cep) : '',
+                street: partes.street,
+                street_number: N.limparNumeroEndereco(partes.street_number),
+                complement: N.limparComplemento(partes.complement),
+                neighborhood: end ? N.txt(end.bairro) : '',
+                city: cidade.cidade,
+                state: cidade.uf,
+
+                birthdate: N.data(a.NASCIMENTO),
+                birthplace: nasc.cidade,
+                birth_state: nasc.uf,
+                nationality: this.Lookup('paises', a.NACIONALIDADE),
+
+                gender: N.sexo(a.SEXO),
+                ethnicity: N.etnia(a.COR),
+                civil_status: N.estadoCivil(this.Lookup('estadosCivis', a.ESTADOCIVIL)),
+                profession: this.Lookup('profissoes', a.PROFISSAO),
+                religion: N.txt(a.RELIGIAO),
+
+                cpf: this.CpfUnico(a.CIC_CPF),
+                rg: N.txt(a.RG).replace(/[.\-/\s]/g, ''),
+                rg_issuing_agency: N.txt(a.RG_OE),
+                rg_issuing_state: N.txt(a.RG_UF),
+                rg_issue_date: N.data(a.RG_DE),
+
+                telephone_area_code: fone.ddd,
+                telephone_number: fone.numero,
+                mobile_phone_area_code: cel.ddd,
+                mobile_phone_number: cel.numero,
+                commercial_phone_area_code: com.ddd,
+                commercial_phone_number: com.numero,
+
+                military_certificate: N.txt(a.CERTRESERVISTA),
+                military_certificate_description: N.txt(a.CERTRESERVISTA_SERIE),
+                military_description: N.txt(a.CERTRESERVISTA_EMISSOR),
+
+                voter_document: N.txt(a.TITULOELEITOR),
+                voter_document_zone: N.txt(a.TITULOELEITOR_ZONA),
+                voter_document_section: N.txt(a.TITULOELEITOR_SECAO),
+                voter_document_state: N.txt(a.TITULOELEITOR_UF),
+                voter_document_issue_date: N.data(a.TITULOELEITOR_EMISSAO),
+
+                civil_certificate_term: N.txt(a.CERTNASCIMENTO),
+                civil_certificate_page: N.txt(a.CERTNASCIMENTOFOLHA),
+                civil_certificate_book: N.txt(a.CERTNASCIMENTOLIVRO),
+                civil_certificate_issue_date: N.data(a.CERTNASCIMENTODE),
+                civil_certificate_agency: cartorio ? cartorio.nome : '',
+                civil_certificate_agency_state: cartorioUF,
+                civil_certificate_father: N.txt(a.NOMEPAI),
+                civil_certificate_mother: N.txt(a.NOMEMAE)
+            }));
+
+            if (n % 500 === 0) log(`Alunos: ${n}/${linhas.length}`);
+        }
+        log(`--- ALUNOS concluido: ${n} de ${linhas.length} (${semEndereco} sem endereco em ENDALNS) ---`);
+    }
+
+    async ProcessarProfessores() {
+        log('--- PROFESSORES (CADPROFE) ---');
+        const [linhas] = await origem.query(`
+            SELECT "CODIGO", "NOME", "APELIDO", "NASCIMENTO",
+                   "NACIONALIDADE", "NATURALIDADE", "ESTADOCIVIL",
+                   "NOMEPAI", "NOMEMAE",
+                   "ENDERECO", "BAIRRO", "CIDADE", "CEP",
+                   "TELEFONE", "TELEFONERES", "CELULAR",
+                   "CODIGOMEC", "TITULACAO", "FORMACAO"
+              FROM "CADPROFE"
+             ORDER BY "CODIGO"
+        `);
+
+        let n = 0;
+        for (const p of linhas) {
+            n++;
+            const nome = N.txt(p.NOME);
+            if (nome === '') { log(`Professor ${p.CODIGO} sem nome - ignorado`); continue; }
+
+            const end = N.endereco(p.ENDERECO);
+            const cidade = this.Cidade(p.CIDADE);
+            const nasc = this.Cidade(p.NATURALIDADE);
+            const fone = N.telefone(p.TELEFONERES);
+            const cel = N.telefone(p.CELULAR);
+            const com = N.telefone(p.TELEFONE);
+
+            await this.pessoaServico.RegistraPessoa(...paraArgumentos({
+                id_person: N.idProfessor(p.CODIGO),
+                id_student: '',
+                profile: 1,
+                type: 1,
+
+                name: N.nomePessoa(p.NOME),
+                social_name: N.txt(p.APELIDO),
+                country: 'Brasil',
+                birth_country: 'Brasil',
+
+                zipcode: N.cep(p.CEP),
+                street: end.street,
+                street_number: N.limparNumeroEndereco(end.street_number),
+                complement: N.limparComplemento(end.complement),
+                neighborhood: N.txt(p.BAIRRO),
+                city: cidade.cidade,
+                state: cidade.uf,
+
+                birthdate: N.data(p.NASCIMENTO),
+                birthplace: nasc.cidade,
+                birth_state: nasc.uf,
+                nationality: this.Lookup('paises', p.NACIONALIDADE),
+                civil_status: N.estadoCivil(this.Lookup('estadosCivis', p.ESTADOCIVIL)),
+
+                telephone_area_code: fone.ddd,
+                telephone_number: fone.numero,
+                mobile_phone_area_code: cel.ddd,
+                mobile_phone_number: cel.numero,
+                commercial_phone_area_code: com.ddd,
+                commercial_phone_number: com.numero,
+
+                civil_certificate_father: N.txt(p.NOMEPAI),
+                civil_certificate_mother: N.txt(p.NOMEMAE),
+
+                academic_title: N.txt(p.TITULACAO) || N.txt(p.FORMACAO),
+                codigo_professor_INEP: N.txt(p.CODIGOMEC)
+            }));
+        }
+        log(`--- PROFESSORES concluido: ${n} de ${linhas.length} ---`);
+    }
+
+    async ProcessarFuncionarios() {
+        log('--- FUNCIONARIOS (CADFUNC) ---');
+        const [linhas] = await origem.query(`
+            SELECT "CODIGO", "NOME", "DATANASCIMENTO", "COR",
+                   "NACIONALIDADE", "NATURALIDADE", "ESTADOCIVIL",
+                   "RG", "RG_OE", "RG_DE", "RG_UF", "CPF",
+                   "ENDERECO", "BAIRRO", "CIDADE", "CEP",
+                   "TELEFONE", "CELULAR",
+                   "TITULOELEITOR", "TITULOELEITORZONA", "TITULOELEITORSECAO", "TITULOELEITORMUNICIPIO",
+                   "CARTRESERVISTA"
+              FROM "CADFUNC"
+             ORDER BY "CODIGO"
+        `);
+
+        let n = 0;
+        for (const f of linhas) {
+            n++;
+            const nome = N.txt(f.NOME);
+            if (nome === '') { log(`Funcionario ${f.CODIGO} sem nome - ignorado`); continue; }
+
+            const end = N.endereco(f.ENDERECO);
+            const cidade = this.Cidade(f.CIDADE);
+            const nasc = this.Cidade(f.NATURALIDADE);
+            const fone = N.telefone(f.TELEFONE);
+            const cel = N.telefone(f.CELULAR);
+
+            await this.pessoaServico.RegistraPessoa(...paraArgumentos({
+                id_person: N.idFuncionario(f.CODIGO),
+                id_student: '',
+                profile: 4,
+                type: 1,
+
+                name: N.nomePessoa(f.NOME),
+                country: 'Brasil',
+                birth_country: 'Brasil',
+
+                zipcode: N.cep(f.CEP),
+                street: end.street,
+                street_number: N.limparNumeroEndereco(end.street_number),
+                complement: N.limparComplemento(end.complement),
+                neighborhood: N.txt(f.BAIRRO),
+                city: cidade.cidade,
+                state: cidade.uf,
+
+                birthdate: N.data(f.DATANASCIMENTO),
+                birthplace: nasc.cidade,
+                birth_state: nasc.uf,
+                nationality: this.Lookup('paises', f.NACIONALIDADE),
+                civil_status: N.estadoCivil(this.Lookup('estadosCivis', f.ESTADOCIVIL)),
+                ethnicity: N.etnia(f.COR),
+
+                cpf: this.CpfUnico(f.CPF),
+                rg: N.txt(f.RG).replace(/[.\-/\s]/g, ''),
+                rg_issuing_agency: N.txt(f.RG_OE),
+                rg_issuing_state: N.txt(f.RG_UF),
+                rg_issue_date: N.data(f.RG_DE),
+
+                telephone_area_code: fone.ddd,
+                telephone_number: fone.numero,
+                mobile_phone_area_code: cel.ddd,
+                mobile_phone_number: cel.numero,
+
+                voter_document: N.txt(f.TITULOELEITOR),
+                voter_document_zone: N.txt(f.TITULOELEITORZONA),
+                voter_document_section: N.txt(f.TITULOELEITORSECAO),
+                voter_document_city: this.Cidade(f.TITULOELEITORMUNICIPIO).cidade,
+                voter_document_state: this.Cidade(f.TITULOELEITORMUNICIPIO).uf,
+
+                military_certificate: N.txt(f.CARTRESERVISTA)
+            }));
+        }
+        log(`--- FUNCIONARIOS concluido: ${n} de ${linhas.length} ---`);
+    }
+
+    async ProcessarFiliacao() {
+        if (process.env.FILIACAO != 1) return;
+
+        log('=========== INICIO FILIACOES ===========');
+        const [linhas] = await origem.query(`
+            SELECT "CODIGO", "MAE", "PAI", "RESP", "PED",
+                   "GRAUPARENTESCOMAE", "GRAUPARENTESCOPAI",
+                   "GRAUPARENTESCORESP", "GRAUPARENTESCOPED"
+              FROM "ALUNOS"
+             ORDER BY "CODIGO"
+        `);
+
+        let gravadas = 0, semVinculo = 0;
+        for (const a of linhas) {
+            const idAluno = N.idAluno(a.CODIGO);
+
+            const codMae = N.codigo(a.MAE);
+            const codPai = N.codigo(a.PAI);
+            const codResp = N.codigo(a.RESP);
+            const codPed = N.codigo(a.PED);
+
+            const porPessoa = new Map();
+            const juntar = (cod, relationship, financeiro, grauBruto) => {
+                if (!cod) return;
+                const grauTexto = N.txt(grauBruto);
+                const rel = grauTexto !== '' ? N.parentesco(grauTexto) : relationship;
+                const atual = porPessoa.get(cod);
+                if (!atual) {
+                    porPessoa.set(cod, { relationship: rel, financeiro });
+                    return;
+                }
+                if (atual.relationship === 'responsável' && rel !== 'responsável') atual.relationship = rel;
+                atual.financeiro = atual.financeiro || financeiro;
+            };
+
+            juntar(codMae, 'mãe', codMae === codResp, a.GRAUPARENTESCOMAE);
+            juntar(codPai, 'pai', codPai === codResp, a.GRAUPARENTESCOPAI);
+            juntar(codResp, 'responsável', true, a.GRAUPARENTESCORESP);
+            juntar(codPed, 'responsável', codPed === codResp, a.GRAUPARENTESCOPED);
+
+            for (const [cod, v] of porPessoa) {
+                await this.filiacaoServico.RegistraFiliation(
+                    N.idResponsavel(cod), idAluno, v.relationship, v.financeiro
                 );
-                count++;
+                gravadas++;
             }
-            console.log('FIM PROCESSANDO FILIACAO')
+            if (porPessoa.size === 0) semVinculo++;
         }
-        //////////////////////////// FIM FILIACAO (SPONTE) ////////////////////////////
-
-        /* BLOCO DO EXTRATOR GIZ - DESATIVADO PARA O SPONTE.
-           Le GEN_PESSOA, ALUNOSS, ALUNOGER e PROFESS (inexistentes no Sponte) e monta o
-           id_student concatenando prefixos 99/88, esquema que nao corresponde ao id_student
-           gravado hoje em tb_persons. Eram tres blocos (pai, mae, responsavel financeiro)
-           porque o GIZ guardava o parentesco em colunas separadas; no Sponte ele vem de
-           AlunosResponsaveis.TipoResponsavelID e o bloco acima resolve os tres de uma vez.
-           Preservado para consulta.
-
-        if(process.env.FILIACAO == 1){ /// .env
-            let count = 1;
-            /////////////////////////////INICIO PAIS /////////////////////////////////////////////
-            if(true){
-                const paisModel = await connectionSQLServer.query(`
-                    SELECT 
-                        DISTINCT 
-                        GEN_PESSOA.PES_COD
-                        ,GEN_PESSOA.PES_IDALUNO
-                        ,COALESCE(NULLIF(ALUNOS.PAI, ''), DADOS.PAI) AS PAI
-                    FROM GEN_PESSOA
-                        LEFT JOIN (
-                            SELECT
-                                MATRICULA,
-                                MAX(TIPODOCMILITAR) AS TIPODOCMILITAR,
-                                MAX(DOC_MILIT) AS DOC_MILIT,
-                                MAX(TIT_ELEIT) AS TIT_ELEIT,
-                                MAX(SECAO) AS SECAO,
-                                MAX(ZONA) AS ZONA,
-                                MAX(PAI) AS PAI,
-                                MAX(MAE) AS MAE,
-                                MAX(
-                                CASE WHEN NACIONALI IN ('BRASILEIRA', 'BRASILEIRA', 'BRASILEIRP', 'BRASIL', 'BRASIEIRA', 'BRASILEIRO', 'BRASILEIR0') THEN 'Brasileiro' ELSE NACIONALI END
-                                ) AS NACIONALI,
-                                MAX(ALU_TIPOENSINOMEDIO) AS ALU_TIPOENSINOMEDIO
-                            FROM ALUNOSS
-                                GROUP BY MATRICULA
-                        ) ALUNOS ON ALUNOS.MATRICULA = GEN_PESSOA.PES_IDALUNO
-                        LEFT JOIN PROFESS AS DADOS ON DADOS.PES_COD = GEN_PESSOA.PES_COD
-                    WHERE
-                    -- GEN_PESSOA.PES_COD LIKE '10211' AND
-                        COALESCE(NULLIF(ALUNOS.PAI, ''), DADOS.PAI) IS NOT NULL AND
-                        GEN_PESSOA.PES_NOME <> '01701'
-                    
-                    `);
-                let listaDePais = paisModel[0];
-                listaDePais = listaDePais.filter(p => !p.PAI.includes('XXXX'));
-                for(let pai of listaDePais){
-                    console.log(`Processando ${count} de ${listaDePais.length} PAIS ${pai.PAI}`);
-                    const {PES_COD, PES_IDALUNO} = pai;
-                    let idPerson = parseInt(PES_COD);
-                    let idStudent = PES_IDALUNO ? parseInt(PES_IDALUNO) : idPerson;
-                    if (typeof idStudent === 'number' && Number.isNaN(idStudent)) {
-                        idStudent = idPerson;
-                    } else {
-                        idStudent = `${idPerson}${idStudent}`;
-                        idStudent = parseInt(idStudent)
-                    }
-                    let id = parseInt(`99${idPerson}`);
-                    await filiacaoServico.RegistraFiliation(id, idStudent, 'pai', false);
-                    
-                    count++;
-                }
-            }
-            /////////////////////////////FIM PAIS /////////////////////////////////////////////
-            count = 1;
-            /////////////////////////////INICIO MAES /////////////////////////////////////////////
-            if(true){
-                const maesModel = await connectionSQLServer.query(`
-                    SELECT 
-	DISTINCT 
-	GEN_PESSOA.PES_COD
-	,GEN_PESSOA.PES_IDALUNO
-	,COALESCE(NULLIF(ALUNOS.MAE, ''), DADOS.MAE) AS MAE
-FROM GEN_PESSOA
-    LEFT JOIN (
-        SELECT
-            MATRICULA,
-            MAX(TIPODOCMILITAR) AS TIPODOCMILITAR,
-            MAX(DOC_MILIT) AS DOC_MILIT,
-            MAX(TIT_ELEIT) AS TIT_ELEIT,
-            MAX(SECAO) AS SECAO,
-            MAX(ZONA) AS ZONA,
-            MAX(PAI) AS PAI,
-            MAX(MAE) AS MAE,
-            MAX(
-            CASE WHEN NACIONALI IN ('BRASILEIRA', 'BRASILEIRA', 'BRASILEIRP', 'BRASIL', 'BRASIEIRA', 'BRASILEIRO', 'BRASILEIR0') THEN 'Brasileiro' ELSE NACIONALI END
-            ) AS NACIONALI,
-            MAX(ALU_TIPOENSINOMEDIO) AS ALU_TIPOENSINOMEDIO
-        FROM ALUNOSS
-            GROUP BY MATRICULA
-    ) ALUNOS ON ALUNOS.MATRICULA = GEN_PESSOA.PES_IDALUNO
-	LEFT JOIN PROFESS AS DADOS ON DADOS.PES_COD = GEN_PESSOA.PES_COD
-WHERE
-   -- GEN_PESSOA.PES_COD LIKE '10211' AND
-    COALESCE(NULLIF(ALUNOS.MAE, ''), DADOS.MAE) IS NOT NULL AND
-    GEN_PESSOA.PES_NOME <> '01701'
-                    `);
-                let listaDeMaes = maesModel[0];
-                listaDeMaes = listaDeMaes.filter(p => !p.MAE.includes('XXXX'));
-                for(let mae of listaDeMaes){
-                    console.log(`Processando ${count} de ${listaDeMaes.length} MAES ${mae.ALUN_NomeMae}`);
-                    const {PES_COD, PES_IDALUNO} = mae;
-                    let idPerson = parseInt(PES_COD);
-                    let idStudent = PES_IDALUNO ? parseInt(PES_IDALUNO) : idPerson;
-                    if (typeof idStudent === 'number' && Number.isNaN(idStudent)) {
-                        idStudent = idPerson;
-                    } else {
-                        idStudent = `${idPerson}${idStudent}`;
-                        idStudent = parseInt(idStudent)
-                    }
-                    let id = parseInt(`88${idPerson}`);
-
-                    await filiacaoServico.RegistraFiliation(id, idStudent, 'mãe', false);
-
-                    count++;
-                }
-            }
-            /////////////////////////////FIM MAES /////////////////////////////////////////////
-            count = 1;
-            //////////////////////// INICIO RESPONSAVEL FINANCEIRO //////////////////////
-            if(true){
-                const PESModel = await connectionSQLServer.query(`
-                    SELECT
-                        ALUNOGER.PES_COD AS COD_ALUNO
-                        ,ALUNOGER.MATRICULA
-                        --,ALUNOGER.COD_RESP
-                        --, GEN_PESSOA.PES_NOME
-                        , GEN_PESSOA.PES_COD AS COD_RESP_FINANCEIRO
-                    FROM ALUNOGER
-                    INNER JOIN GEN_PESSOA ON GEN_PESSOA.PES_IDRESPONSAVEL = ALUNOGER.COD_RESP AND ALUNOGER.COD_RESP <> GEN_PESSOA.PES_COD
-                    WHERE 
-                        --ALUNOGER."COD_RESP" = '03989' AND
-                        ALUNOGER."MATRICULA" IS NOT NULL
-                    `);
-                let listaDePessoas = PESModel[0];
-                //listaDePessoas = listaDePessoas.filter(p => !p.MAE.includes('XXXX'));
-                for(let resp of listaDePessoas){
-                    console.log(`Processando ${count} de ${listaDePessoas.length} Responsáveis`);
-                    const {COD_ALUNO, MATRICULA, COD_RESP_FINANCEIRO} = resp;
-                    let idPerson = parseInt(COD_ALUNO);
-                    let idStudent = MATRICULA ? parseInt(MATRICULA) : idPerson;
-                    if (typeof idStudent === 'number' && Number.isNaN(idStudent)) {
-                        idStudent = idPerson;
-                    } else {
-                        idStudent = `${idPerson}${idStudent}`;
-                        idStudent = parseInt(idStudent)
-                    }
-                    let id = parseInt(`${COD_RESP_FINANCEIRO}`);
-
-                    await filiacaoServico.RegistraFiliation(id, idStudent, 'responsável', false);
-
-                    count++;
-                }
-            }
-            //////////////////////// FIM RESPONSAVEL FINANCEIRO ////////////////////////
-        }
-        */
-        if(process.env.CSVFILIACAO == 1){
-            console.log('INICIO GERANDO CSV FILIACAO');
-            const filiationGennera = await filiacaoServico.BuscaTodasFiliations();
-
-            const maxByFile = 11000
-            let lote = 1;
-            let count = 0;
-            let objArr = {};
-            filiationGennera.forEach(p => {
-                if(count < maxByFile){
-                    if(objArr.hasOwnProperty(`${lote}`)){
-                        objArr[`${lote}`].push(p);
-                        count++
-                    } else {
-                        objArr[`${lote}`] = [];
-                        objArr[`${lote}`].push(p);
-                        count++
-                    }
-                } else {
-                    count = 0;
-                    lote++;
-                    if(objArr.hasOwnProperty(`${lote}`)){
-                        objArr[`${lote}`].push(p);
-                        count++
-                    } else {
-                        objArr[`${lote}`] = [];
-                        objArr[`${lote}`].push(p);
-                        count++
-                    }
-                }
-            });
-            for(let numeroLote in objArr){
-                const layoutService = new LayoutService(`Filiação_Part_${numeroLote}`);
-                await layoutService.CreateFile(objArr[`${numeroLote}`]);
-            }
-            console.log('FIM GERANDO CSV FILIACAO');
-        }
-    }
-
-    async SetPessoasImportadas(){
-        if(process.env.PESSOASIMPORTADAS == 1){
-            let texto = '';
-            const pessoaServico = new PersonService();
-            let count = 1;
-            for(let idPerson of pessoasImportadas){
-                console.log(`Marcando Como Importado: Processando ${count} de ${pessoasImportadas.length}`);
-                const existePessoa = await pessoaServico.BuscarPessoaPeloIdPerson(idPerson);
-                if(existePessoa) await pessoaServico.MarcarComoImportada(idPerson);
-                else texto += `${idPerson}\n`;
-                count++;
-            }
-            console.log(texto);
-        }
+        log(`=========== FIM FILIACOES: ${gravadas} vinculos, ${semVinculo} aluno(s) sem nenhum responsavel ===========`);
     }
 }
-
 
 module.exports = PessoaService;

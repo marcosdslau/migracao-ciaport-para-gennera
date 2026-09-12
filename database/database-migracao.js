@@ -23,9 +23,9 @@ const connectionSQLServessr = new Sequelize(process.env.DB_MIG_NAME, process.env
 });
 
 const connectionSQLServer = new Sequelize(process.env.DB_MIG_NAME, process.env.DB_MIG_USER, process.env.DB_MIG_PWD, {
-    host: process.env.DB_HOST,
-    dialect: process.env.DB_DIALECT,
-    port: process.env.DB_PORT,
+    host: process.env.DB_MIG_HOST || process.env.DB_HOST,
+    dialect: process.env.DB_MIG_DIALECT || process.env.DB_DIALECT,
+    port: process.env.DB_MIG_PORT || process.env.DB_PORT,
     timezone: process.env.DB_TIMEZONE,
     logging: false,
 });

@@ -1,0 +1,22 @@
+# Dependencias
+node_modules
+
+# Variaveis de ambiente (contem senhas de banco)
+.env
+.env.*
+!.env.example
+
+# Editores
+.vscode
+.idea
+
+# Dumps/planilhas gerados durante a migracao
+# (csv/ e logs/ ja possuem .gitignore proprio)
+errors/*.json
+errors/*.csv
+tmp/*.json
+tmp/*.csv
+
+# Sistema
+Thumbs.db
+desktop.ini
